@@ -1,15 +1,26 @@
+import type React from "react"
+import "./globals.css"
 import type { Metadata } from "next"
 import { Inter } from "next/font/google"
-import "./globals.css"
+import { AuthProvider, RequireAuth } from "@/lib/AuthContext"
 import { Sidebar } from "@/components/sidebar"
-import type React from "react"
 
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "Range Balance App",
-  description: "Track and improve your range of motion exercises",
-    generator: 'v0.dev'
+  description: "An app for managing range balance exercises",
+}
+
+function RootLayoutContent({ children }: { children: React.ReactNode }) {
+  return (
+    <RequireAuth>
+      <div className="flex h-screen">
+        <Sidebar />
+        <main className="flex-1 overflow-auto p-4">{children}</main>
+      </div>
+    </RequireAuth>
+  )
 }
 
 export default function RootLayout({
@@ -19,16 +30,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.className} nordic-bg min-h-screen`}>
-        <div className="flex flex-col lg:flex-row h-screen overflow-hidden">
-          <Sidebar />
-          <main className="flex-1 overflow-y-auto p-4 lg:p-8">{children}</main>
-        </div>
+      <body className={inter.className}>
+        <AuthProvider>
+          <RootLayoutContent>{children}</RootLayoutContent>
+        </AuthProvider>
       </body>
     </html>
   )
 }
 
-
-
-import './globals.css'
