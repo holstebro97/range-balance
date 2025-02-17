@@ -1,5 +1,6 @@
 "use client"
 
+import type React from "react"
 import { useState, useEffect } from "react"
 import { Exercise } from "@/components/exercise"
 import {
@@ -10,40 +11,33 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { useCountdown } from "@/hooks/use-countdown"
-import type React from "react" // Added import for React
+import { useAuth } from "@/lib/AuthContext"
+import { db } from "@/lib/firebase"
+import { collection, addDoc, updateDoc, deleteDoc, doc } from "firebase/firestore"
 
 type ProgressEntry = {
-  date: string
-  tension: "low" | "medium" | "high"
-  weight: number
-  reps: number
   id: string
+  reps: number
+  sets: number
+  weight: number
+  date: number
 }
 
 type ExerciseType = {
   id: number
-  exercises: [
-    {
-      name: string
-      description: string
-      function: string
-      range: string
-      youtubeLink: string
-      typeOfMovement: "Compound Exercise" | "Isolation Exercise"
-    },
-    {
-      name: string
-      description: string
-      function: string
-      range: string
-      youtubeLink: string
-      typeOfMovement: "Compound Exercise" | "Isolation Exercise"
-    },
-  ]
-  reappearInterval: number
+  name: string
+  description: string
+  muscleGroup: string
+  exercises: {
+    id: number
+    range: string
+    reps: number
+    sets: number
+    weight: number
+    function: string
+  }[]
   completed: boolean
   completionTime?: number
   reappearTime?: number
@@ -72,99 +66,90 @@ export function ExerciseList({
   exerciseType,
 }: ExerciseListProps) {
   const [exerciseToDelete, setExerciseToDelete] = useState<ExerciseType | null>(null)
-  const [activeExercises, setActiveExercises] = useState<ExerciseType[]>([])
-  const [restingExercises, setRestingExercises] = useState<ExerciseType[]>([])
   const { countdowns, startCountdown, stopCountdown, getRemainingTime } = useCountdown(exerciseType)
+  const { user } = useAuth()
 
-  useEffect(() => {
-    const now = Date.now()
-    const active = exercises.filter(
-      (e) =>
-        (functionFilter === "all" || e.exercises.some((ex) => ex.function === functionFilter)) &&
-        (rangeFilter === "all" || e.exercises.some((ex) => ex.range === rangeFilter)) &&
-        (!e.completed || (e.reappearTime && e.reappearTime <= now)),
-    )
-    const resting = exercises.filter(
-      (e) =>
-        (functionFilter === "all" || e.exercises.some((ex) => ex.function === functionFilter)) &&
-        (rangeFilter === "all" || e.exercises.some((ex) => ex.range === rangeFilter)) &&
-        e.completed &&
-        e.reappearTime &&
-        e.reappearTime > now,
-    )
-    setActiveExercises(active)
-    setRestingExercises(resting)
-  }, [exercises, functionFilter, rangeFilter])
+  const filteredExercises = exercises.filter((exercise) => {
+    const functionMatch = functionFilter === "all" || exercise.exercises.some((ex) => ex.function === functionFilter)
+    const rangeMatch = rangeFilter === "all" || exercise.exercises.some((ex) => ex.range === rangeFilter)
+    return functionMatch && rangeMatch
+  })
 
-  useEffect(() => {
-    const checkCountdowns = () => {
-      exercises.forEach((exercise) => {
-        const remainingTime = getRemainingTime(exercise.id)
-        if (remainingTime === 0 && exercise.completed) {
-          const updatedExercises = exercises.map((ex) =>
-            ex.id === exercise.id
-              ? { ...ex, completed: false, completionTime: undefined, reappearTime: undefined }
-              : ex,
-          )
-          setExercises(updatedExercises)
-          localStorage.setItem(`${exerciseType}Exercises`, JSON.stringify(updatedExercises))
-        }
-      })
-    }
+  const handleCheckExercise = async (id: number) => {
+    if (!user) return
 
-    const interval = setInterval(checkCountdowns, 1000)
-    return () => clearInterval(interval)
-  }, [exercises, getRemainingTime, setExercises, exerciseType]) // Added setExercises to dependencies
-
-  const handleCheckExercise = (id: number) => {
-    const updatedExercises = exercises.map((exercise) => {
-      if (exercise.id === id) {
-        if (!exercise.completed) {
-          const duration = exercise.exercises[0].range === "short" ? 24 * 3600 : 48 * 3600 // 24 hours or 48 hours
-          startCountdown(id, duration)
-          return {
-            ...exercise,
-            completed: true,
-            completionTime: Date.now(),
-            reappearTime: Date.now() + duration * 1000, // Set reappearTime to match countdown duration
+    setExercises((prevExercises) => {
+      const updatedExercises = prevExercises.map((exercise) => {
+        if (exercise.id === id) {
+          const newCompleted = !exercise.completed
+          if (newCompleted) {
+            const duration = exercise.exercises[0].range === "short" ? 24 * 3600 : 48 * 3600
+            startCountdown(id, duration)
+            return {
+              ...exercise,
+              completed: true,
+              completionTime: Date.now(),
+              reappearTime: Date.now() + duration * 1000,
+            }
+          } else {
+            stopCountdown(id)
+            return { ...exercise, completed: false, completionTime: undefined, reappearTime: undefined }
           }
-        } else {
-          stopCountdown(id)
-          return { ...exercise, completed: false, completionTime: undefined, reappearTime: undefined }
         }
-      }
-      return exercise
+        return exercise
+      })
+      return updatedExercises
     })
-    setExercises(updatedExercises)
-    localStorage.setItem(`${exerciseType}Exercises`, JSON.stringify(updatedExercises))
+
+    // Update Firestore
+    const exerciseRef = doc(db, "users", user.uid, "exercises", id.toString())
+    await updateDoc(exerciseRef, {
+      completed: !exercises.find((e) => e.id === id)?.completed,
+      completionTime: exercises.find((e) => e.id === id)?.completed ? null : Date.now(),
+      reappearTime: exercises.find((e) => e.id === id)?.completed
+        ? null
+        : Date.now() +
+          (exercises.find((e) => e.id === id)?.exercises[0].range === "short" ? 24 * 3600 * 1000 : 48 * 3600 * 1000),
+    })
   }
 
   const handleDeleteExercise = (id: number) => {
     setExerciseToDelete(exercises.find((exercise) => exercise.id === id) || null)
   }
 
-  const confirmDeleteExercise = () => {
-    if (exerciseToDelete) {
+  const confirmDeleteExercise = async () => {
+    if (exerciseToDelete && user) {
       const updatedExercises = exercises.filter((exercise) => exercise.id !== exerciseToDelete.id)
       setExercises(updatedExercises)
-      localStorage.setItem(`${exerciseType}Exercises`, JSON.stringify(updatedExercises))
       stopCountdown(exerciseToDelete.id)
       setExerciseToDelete(null)
+
+      // Delete from Firestore
+      await deleteDoc(doc(db, "users", user.uid, "exercises", exerciseToDelete.id.toString()))
     }
   }
 
-  const handleUpdateProgress = (id: number, progress: ProgressEntry) => {
-    const updatedExercises = exercises.map((exercise) => {
-      if (exercise.id === id) {
-        return { ...exercise, progress: [...exercise.progress, progress] }
-      }
-      return exercise
+  const handleUpdateProgress = async (id: number, progress: ProgressEntry) => {
+    if (!user) return
+
+    setExercises((prevExercises) => {
+      const updatedExercises = prevExercises.map((exercise) => {
+        if (exercise.id === id) {
+          return { ...exercise, progress: [...exercise.progress, progress] }
+        }
+        return exercise
+      })
+      return updatedExercises
     })
-    setExercises(updatedExercises)
-    localStorage.setItem(`${exerciseType}Exercises`, JSON.stringify(updatedExercises))
+
+    // Add progress to Firestore
+    const progressRef = collection(db, "users", user.uid, "exercises", id.toString(), "progress")
+    await addDoc(progressRef, progress)
   }
 
-  const handleDeleteProgress = (exerciseId: number, progressId: string) => {
+  const handleDeleteProgress = async (exerciseId: number, progressId: string) => {
+    if (!user) return
+
     console.log(`Deleting progress: Exercise ID ${exerciseId}, Progress ID ${progressId}`)
     setExercises((prevExercises) => {
       const updatedExercises = prevExercises.map((exercise) => {
@@ -180,12 +165,16 @@ export function ExerciseList({
         return exercise
       })
       console.log("Updated exercises:", updatedExercises)
-      localStorage.setItem(`${exerciseType}Exercises`, JSON.stringify(updatedExercises))
       return updatedExercises
     })
+
+    // Delete progress from Firestore
+    await deleteDoc(doc(db, "users", user.uid, "exercises", exerciseId.toString(), "progress", progressId))
   }
 
-  const handleCancelRest = (id: number) => {
+  const handleCancelRest = async (id: number) => {
+    if (!user) return
+
     const updatedExercises = exercises.map((exercise) => {
       if (exercise.id === id) {
         stopCountdown(id)
@@ -194,67 +183,70 @@ export function ExerciseList({
       return exercise
     })
     setExercises(updatedExercises)
-    localStorage.setItem(`${exerciseType}Exercises`, JSON.stringify(updatedExercises))
+
+    // Update Firestore
+    const exerciseRef = doc(db, "users", user.uid, "exercises", id.toString())
+    await updateDoc(exerciseRef, {
+      completed: false,
+      completionTime: null,
+      reappearTime: null,
+    })
   }
 
-  const handleReset = (id: number) => {
-    const updatedExercises = exercises.map((exercise) => {
-      if (exercise.id === id) {
-        stopCountdown(id)
-        return { ...exercise, completed: false, completionTime: undefined, reappearTime: undefined }
-      }
-      return exercise
+  const handleReset = async (id: number) => {
+    if (!user) return
+
+    setExercises((prevExercises) => {
+      const updatedExercises = prevExercises.map((exercise) => {
+        if (exercise.id === id) {
+          stopCountdown(id)
+          return { ...exercise, completed: false, completionTime: undefined, reappearTime: undefined }
+        }
+        return exercise
+      })
+      return updatedExercises
     })
-    setExercises(updatedExercises)
-    localStorage.setItem(`${exerciseType}Exercises`, JSON.stringify(updatedExercises))
+
+    // Update Firestore
+    if (user) {
+      const exerciseRef = doc(db, "users", user.uid, "exercises", id.toString())
+      await updateDoc(exerciseRef, {
+        completed: false,
+        completionTime: null,
+        reappearTime: null,
+      })
+    }
   }
+
+  useEffect(() => {
+    // This effect will run whenever the exercises prop changes
+    console.log("Exercises updated in ExerciseList:", exercises)
+  }, [exercises])
 
   return (
     <div>
-      <div className="space-y-4">
-        {activeExercises.map((exercise) => (
-          <Exercise
-            key={exercise.id}
-            exercise={exercise}
-            onCheck={handleCheckExercise}
-            onUpdateProgress={updateExerciseProgress}
-            onDeleteProgress={deleteExerciseProgress}
-            isResting={false}
-            onStartCountdown={startCountdown}
-            countdownRemaining={getRemainingTime(exercise.id)}
-            onReset={handleReset}
-          />
-        ))}
-      </div>
-      {restingExercises.length > 0 && (
-        <div className="space-y-4">
-          <h2 className="text-2xl font-bold">Rest Section</h2>
-          {restingExercises.map((exercise) => (
-            <Exercise
-              key={exercise.id}
-              exercise={exercise}
-              onCheck={handleCheckExercise}
-              onUpdateProgress={updateExerciseProgress}
-              onDeleteProgress={deleteExerciseProgress}
-              isResting={true}
-              onCancelRest={handleCancelRest}
-              onStartCountdown={startCountdown}
-              countdownRemaining={getRemainingTime(exercise.id)}
-              onReset={handleReset}
-            />
-          ))}
-        </div>
-      )}
-      <AlertDialog open={!!exerciseToDelete} onOpenChange={() => setExerciseToDelete(null)}>
+      {filteredExercises.map((exercise) => (
+        <Exercise
+          key={exercise.id}
+          exercise={exercise}
+          onCheck={() => handleCheckExercise(exercise.id)}
+          onDelete={() => handleDeleteExercise(exercise.id)}
+          onUpdateProgress={handleUpdateProgress}
+          onDeleteProgress={handleDeleteProgress}
+          onExerciseComplete={onExerciseComplete}
+          isResting={!!exercise.completionTime}
+          onCancelRest={() => handleCancelRest(exercise.id)}
+          onStartCountdown={startCountdown}
+          countdownRemaining={getRemainingTime(exercise.id)}
+          onReset={() => handleReset(exercise.id)}
+        />
+      ))}
+      <AlertDialog open={exerciseToDelete !== null} onOpenChange={() => setExerciseToDelete(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Are you sure you want to delete this exercise?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete the exercise from your list.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
+          <AlertDialogHeader>Delete Exercise</AlertDialogHeader>
+          <AlertDialogDescription>Are you sure you want to delete this exercise?</AlertDialogDescription>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => setExerciseToDelete(null)}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={confirmDeleteExercise}>Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
